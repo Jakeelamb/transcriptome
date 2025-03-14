@@ -111,8 +111,8 @@ def submit_trimming_jobs(pairs, dirs):
     job_ids = []
     for sample, r1, r2 in pairs:
         sbatch_script = f"""#!/bin/bash
-#SBATCH --partition=short-cpu
-#SBATCH --time=01:00:00
+#SBATCH --partition=day-long-cpu
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G
