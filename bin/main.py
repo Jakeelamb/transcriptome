@@ -147,24 +147,25 @@ fastp \\
             sys.exit(1)
     return job_ids
 
-def merged_files_exist(merging_results_dir):
-    """Check if merged files exist and are non-empty."""
-    merged_r1 = os.path.join(merging_results_dir, 'merged_R1.fastq.gz')
-    merged_r2 = os.path.join(merging_results_dir, 'merged_R2.fastq.gz')
-    return (os.path.exists(merged_r1) and os.path.getsize(merged_r1) > 0 and
-            os.path.exists(merged_r2) and os.path.getsize(merged_r2) > 0)
+def normalized_files_exist(normalization_results_dir):
+    """Check if normalized FASTA files exist and are non-empty."""
+    # Updated to check .fa extensions since normalization outputs FASTA with FASTA input
+    norm_left = os.path.join(normalization_results_dir, 'left.norm.fa')
+    norm_right = os.path.join(normalization_results_dir, 'right.norm.fa')
+    return (os.path.exists(norm_left) and os.path.getsize(norm_left) > 0 and
+            os.path.exists(norm_right) and os.path.getsize(norm_right) > 0)
 
-def submit_merging_job(dirs, dependency=None):
-    """Submit job to merge trimmed reads using pigz."""
+def submit_normalization_job(dirs, dependency=None):
+    """Submit job to stream trimmed FASTQ files as FASTA into normalization."""
     sbatch_script = f"""#!/bin/bash
-#SBATCH --partition=day-long-cpu
-#SBATCH --time=10:00:00
+#SBATCH --partition=week-long-highmem
+#SBATCH --time=168:00:00
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
-#SBATCH --job-name=merge_reads
-#SBATCH --output={dirs['merging_logs']}/merge_reads.out
-#SBATCH --error={dirs['merging_logs']}/merge_reads.err
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=250G
+#SBATCH --job-name=trinity_norm
+#SBATCH --output={dirs['normalization_logs']}/trinity_norm.out
+#SBATCH --error={dirs['normalization_logs']}/trinity_norm.err
 """
     if dependency:
         sbatch_script += f"#SBATCH --dependency=afterok:{':'.join(dependency)}\n"
@@ -174,61 +175,34 @@ def submit_merging_job(dirs, dependency=None):
 source ~/.bashrc
 conda activate transcriptome
 
-# Merge R1 files
-R1_FILES=$(ls {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz)
-pigz -dc $R1_FILES | pigz -1 > {dirs['merging_results']}/merged_R1.fastq.gz
+# Create named pipes for streaming FASTA data
+mkfifo {dirs['normalization_results']}/left_pipe.fa
+mkfifo {dirs['normalization_results']}/right_pipe.fa
 
-# Merge R2 files
-R2_FILES=$(ls {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz)
-pigz -dc $R2_FILES | pigz -1 > {dirs['merging_results']}/merged_R2.fastq.gz
-"""
-    result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
-    if result.returncode == 0:
-        job_id = result.stdout.strip().split()[-1]
-        print(f"Submitted merging job: job ID {job_id}")
-        return job_id
-    else:
-        print(f"Failed to submit merging job: {result.stderr}")
-        sys.exit(1)
-
-def normalized_files_exist(normalization_results_dir):
-    """Check if normalized files exist and are non-empty."""
-    norm_left = os.path.join(normalization_results_dir, 'left.norm.fq')
-    norm_right = os.path.join(normalization_results_dir, 'right.norm.fq')
-    return (os.path.exists(norm_left) and os.path.getsize(norm_left) > 0 and
-            os.path.exists(norm_right) and os.path.getsize(norm_right) > 0)
-
-def submit_normalization_job(dirs, dependency=None):
-    """Submit job to normalize reads using Trinity."""
-    sbatch_script = f"""#!/bin/bash
-#SBATCH --partition=day-long-cpu
-#SBATCH --time=12:00:00
-#SBATCH --nodes=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=128G
-#SBATCH --job-name=trinity_norm
-#SBATCH --output={dirs['normalization_logs']}/trinity_norm.out
-#SBATCH --error={dirs['normalization_logs']}/trinity_norm.err
-"""
-    if dependency:
-        sbatch_script += f"#SBATCH --dependency=afterok:{dependency}\n"
-    
-    sbatch_script += f"""
-# Source bashrc and activate conda environment
-source ~/.bashrc
-conda activate transcriptome
-
+# Start normalization with FASTA input in background
 $TRINITY_HOME/util/insilico_read_normalization.pl \\
-    --seqType fq \\
+    --seqType fa \\
     --JM 128G \\
     --max_cov 100 \\
-    --left "{dirs['merging_results']}/merged_R1.fastq.gz" \\
-    --right "{dirs['merging_results']}/merged_R2.fastq.gz" \\
+    --left "{dirs['normalization_results']}/left_pipe.fa" \\
+    --right "{dirs['normalization_results']}/right_pipe.fa" \\
     --pairs_together \\
     --PARALLEL_STATS \\
     --CPU $SLURM_CPUS_PER_TASK \\
     --output "{dirs['normalization_results']}" \\
-    2>> "{dirs['normalization_logs']}/trinity_norm.log"
+    2>> "{dirs['normalization_logs']}/trinity_norm.log" &
+
+# Stream trimmed R1 files as FASTA into left_pipe.fa
+parallel -j 16 'pigz -dc {{}} | seqtk seq -A -' ::: {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz > "{dirs['normalization_results']}/left_pipe.fa" &
+
+# Stream trimmed R2 files as FASTA into right_pipe.fa
+parallel -j 16 'pigz -dc {{}} | seqtk seq -A -' ::: {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz > "{dirs['normalization_results']}/right_pipe.fa" &
+
+# Wait for all background processes to finish
+wait
+
+# Clean up named pipes
+rm "{dirs['normalization_results']}/left_pipe.fa" "{dirs['normalization_results']}/right_pipe.fa"
 """
     result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
     if result.returncode == 0:
@@ -239,16 +213,8 @@ $TRINITY_HOME/util/insilico_read_normalization.pl \\
         print(f"Failed to submit normalization job: {result.stderr}")
         sys.exit(1)
 
-def assembly_files_exist(assembly_results_dir, assembler):
-    """Check if assembly files exist and are non-empty."""
-    if assembler == 'rnaspades':
-        assembly_file = os.path.join(assembly_results_dir, 'rnaspades', 'transcripts.fasta')
-    else:  # trinity
-        assembly_file = os.path.join(assembly_results_dir, 'trinity', 'Trinity.fasta')
-    return os.path.exists(assembly_file) and os.path.getsize(assembly_file) > 0
-
 def submit_assembly_jobs(dirs, dependency=None):
-    """Submit assembly jobs for rnaSPAdes and Trinity."""
+    """Submit assembly jobs for rnaSPAdes and Trinity with FASTA input."""
     job_ids = {}
     
     # rnaSPAdes
@@ -272,8 +238,8 @@ conda activate transcriptome
 
 rnaspades.py \\
     --rna \\
-    -1 "{dirs['normalization_results']}/left.norm.fq" \\
-    -2 "{dirs['normalization_results']}/right.norm.fq" \\
+    -1 "{dirs['normalization_results']}/left.norm.fa" \\
+    -2 "{dirs['normalization_results']}/right.norm.fa" \\
     -o "{dirs['assembly_results']}/rnaspades" \\
     -t $SLURM_CPUS_PER_TASK \\
     -m 250 \\
@@ -308,9 +274,9 @@ source ~/.bashrc
 conda activate transcriptome
 
 Trinity \\
-    --seqType fq \\
-    --left "{dirs['normalization_results']}/left.norm.fq" \\
-    --right "{dirs['normalization_results']}/right.norm.fq" \\
+    --seqType fa \\
+    --left "{dirs['normalization_results']}/left.norm.fa" \\
+    --right "{dirs['normalization_results']}/right.norm.fa" \\
     --no_normalize \\
     --CPU $SLURM_CPUS_PER_TASK \\
     --max_memory 250G \\
@@ -328,75 +294,96 @@ Trinity \\
     
     return job_ids
 
+def assembly_files_exist(assembly_results_dir, assembler):
+    """Check if assembly output files exist and are non-empty."""
+    if assembler == 'rnaspades':
+        # Check for the main transcripts.fasta file from rnaSPAdes
+        transcripts_file = os.path.join(assembly_results_dir, 'rnaspades', 'transcripts.fasta')
+        return os.path.exists(transcripts_file) and os.path.getsize(transcripts_file) > 0
+    elif assembler == 'trinity':
+        # Check for the Trinity.fasta file from Trinity
+        trinity_file = os.path.join(assembly_results_dir, 'trinity', 'Trinity.fasta')
+        return os.path.exists(trinity_file) and os.path.getsize(trinity_file) > 0
+    return False
+
 def busco_files_exist(busco_results_dir, assembler):
-    """Check if BUSCO summary files exist."""
-    summary_file = os.path.join(busco_results_dir, assembler, f"short_summary.specific.diptera_odb10.{assembler}.txt")
-    return os.path.exists(summary_file) and os.path.getsize(summary_file) > 0
+    """Check if BUSCO output files exist and are non-empty."""
+    # Check for the short_summary file which indicates BUSCO completed
+    summary_file = os.path.join(busco_results_dir, assembler, 'short_summary.*.txt')
+    summary_files = glob.glob(summary_file)
+    return len(summary_files) > 0
 
 def submit_busco_jobs(dirs, assembly_job_ids):
-    """Submit BUSCO jobs for each assembly."""
-    job_ids = {}
+    """Submit BUSCO analysis jobs for each assembler's output."""
+    busco_job_ids = {}
     
-    for assembler, dep_job_id in assembly_job_ids.items():
-        assembly_file = (os.path.join(dirs['assembly_results'], 'rnaspades', 'transcripts.fasta') 
-                         if assembler == 'rnaspades' 
-                         else os.path.join(dirs['assembly_results'], 'trinity', 'Trinity.fasta'))
-        sbatch_script = f"""#!/bin/bash
+    for assembler, job_id in assembly_job_ids.items():
+        # Define input file path based on assembler
+        if assembler == 'rnaspades':
+            input_fasta = f"{dirs['assembly_results']}/rnaspades/transcripts.fasta"
+        elif assembler == 'trinity':
+            input_fasta = f"{dirs['assembly_results']}/trinity/Trinity.fasta"
+        else:
+            continue
+        
+        busco_script = f"""#!/bin/bash
 #SBATCH --partition=day-long-cpu
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --job-name=busco_{assembler}
-#SBATCH --output={dirs['busco_logs']}/busco_{assembler}.out
-#SBATCH --error={dirs['busco_logs']}/busco_{assembler}.err
+#SBATCH --output={dirs['busco_logs']}/{assembler}_busco.out
+#SBATCH --error={dirs['busco_logs']}/{assembler}_busco.err
 """
-        if dep_job_id:
-            sbatch_script += f"#SBATCH --dependency=afterok:{dep_job_id}\n"
+        if job_id:
+            busco_script += f"#SBATCH --dependency=afterok:{job_id}\n"
         
-        sbatch_script += f"""
+        busco_script += f"""
 # Source bashrc and activate conda environment
 source ~/.bashrc
 conda activate transcriptome
 
-cd "{dirs['busco_results']}"
+# Create output directory
+mkdir -p {dirs['busco_results']}/{assembler}
+
 busco \\
-    -i "{assembly_file}" \\
+    -i "{input_fasta}" \\
     -o "{assembler}" \\
-    -l diptera_odb10 \\
+    -l eukaryota_odb10 \\
     -m transcriptome \\
     -c $SLURM_CPUS_PER_TASK \\
-    2>> "{dirs['busco_logs']}/busco_{assembler}.log"
+    --out_path "{dirs['busco_results']}" \\
+    2>> {dirs['busco_logs']}/{assembler}_busco.log
 """
-        result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
+        result = subprocess.run(['sbatch'], input=busco_script, text=True, capture_output=True)
         if result.returncode == 0:
             job_id = result.stdout.strip().split()[-1]
-            job_ids[assembler] = job_id
+            busco_job_ids[assembler] = job_id
             print(f"Submitted BUSCO job for {assembler}: job ID {job_id}")
         else:
             print(f"Failed to submit BUSCO job for {assembler}: {result.stderr}")
             sys.exit(1)
-    return job_ids
+    
+    return busco_job_ids
 
 def main():
-    """Orchestrate the transcriptome analysis pipeline."""
+    """Orchestrate the optimized transcriptome analysis pipeline."""
     parser = argparse.ArgumentParser(description='Transcriptome assembly pipeline')
     parser.add_argument('-d', '--debug', action='store_true', help='Skip completed steps in debug mode')
     parser.add_argument('-b', '--base-dir', default=None, 
-                      help='Base directory for the project (defaults to parent directory of script)')
+                        help='Base directory for the project (defaults to parent directory of script)')
     args = parser.parse_args()
     
-    # If base dir is provided, use it, otherwise use parent of script directory
     if args.base_dir:
         base_dir = os.path.abspath(args.base_dir)
     else:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.dirname(script_dir)  # Use parent directory of script
+        base_dir = os.path.dirname(script_dir)
     
     print(f"Using base directory: {base_dir}")
     dirs = setup_directories(base_dir)
     
-    # Print raw reads directory to help with debugging
     print(f"Looking for reads in: {dirs['raw_reads']}")
     
     # Step 1: Identify paired reads
@@ -412,37 +399,37 @@ def main():
     else:
         trimming_job_ids = submit_trimming_jobs(pairs, dirs)
     
-    # Step 3: Merging
-    if args.debug and merged_files_exist(dirs['merging_results']):
-        print("Merged files exist, skipping merging")
-        merging_job_id = None
-    else:
-        merging_job_id = submit_merging_job(dirs, trimming_job_ids if trimming_job_ids else None)
-    
-    # Step 4: Normalization
+    # Step 3: Normalization (Merging integrated here)
     if args.debug and normalized_files_exist(dirs['normalization_results']):
         print("Normalized files exist, skipping normalization")
         normalization_job_id = None
     else:
-        normalization_job_id = submit_normalization_job(dirs, merging_job_id)
+        normalization_job_id = submit_normalization_job(dirs, trimming_job_ids if trimming_job_ids else None)
     
-    # Step 5: Assembly
-    assembly_job_ids = {}
+    # Step 4: Assembly - Fix the logic to submit both assemblies at once
+    run_assembly = False
     for assembler in ['rnaspades', 'trinity']:
-        if args.debug and assembly_files_exist(dirs['assembly_results'], assembler):
-            print(f"{assembler.capitalize()} assembly exists, skipping {assembler} assembly")
-            assembly_job_ids[assembler] = None
-        else:
-            if assembler == 'rnaspades' or not assembly_job_ids:
-                assembly_job_ids.update(submit_assembly_jobs(dirs, normalization_job_id))
-            # Avoid resubmitting if already submitted
+        if not (args.debug and assembly_files_exist(dirs['assembly_results'], assembler)):
+            run_assembly = True
+            break
     
-    # Step 6: BUSCO
+    if run_assembly:
+        assembly_job_ids = submit_assembly_jobs(dirs, normalization_job_id)
+    else:
+        print("All assembly outputs exist, skipping assembly")
+        assembly_job_ids = {'rnaspades': None, 'trinity': None}
+    
+    # Step 5: BUSCO
+    run_busco = {}
     for assembler in ['rnaspades', 'trinity']:
         if args.debug and busco_files_exist(dirs['busco_results'], assembler):
             print(f"BUSCO results for {assembler} exist, skipping BUSCO for {assembler}")
+            run_busco[assembler] = None
         else:
-            submit_busco_jobs(dirs, {assembler: assembly_job_ids[assembler]})
+            run_busco[assembler] = assembly_job_ids[assembler]
+    
+    if any(run_busco.values()) or not args.debug:
+        submit_busco_jobs(dirs, run_busco)
 
 if __name__ == "__main__":
     main()
