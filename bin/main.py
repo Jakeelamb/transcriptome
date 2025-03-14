@@ -175,6 +175,16 @@ def submit_normalization_job(dirs, dependency=None):
 source ~/.bashrc
 conda activate transcriptome
 
+# Check if trimmed files exist
+if [ -z "$(ls {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz 2>/dev/null)" ]; then
+    echo "Error: No trimmed R1 files found in {dirs['trimmed_reads']}" >&2
+    exit 1
+fi
+if [ -z "$(ls {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz 2>/dev/null)" ]; then
+    echo "Error: No trimmed R2 files found in {dirs['trimmed_reads']}" >&2
+    exit 1
+fi
+
 # Create named pipes for streaming FASTA data
 mkfifo {dirs['normalization_results']}/left_pipe.fa
 mkfifo {dirs['normalization_results']}/right_pipe.fa
@@ -192,11 +202,11 @@ $TRINITY_HOME/util/insilico_read_normalization.pl \\
     --output "{dirs['normalization_results']}" \\
     2>> "{dirs['normalization_logs']}/trinity_norm.log" &
 
-# Stream trimmed R1 files as FASTA into left_pipe.fa
-parallel -j 16 'pigz -dc {{}} | seqtk seq -A -' ::: {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz > "{dirs['normalization_results']}/left_pipe.fa" &
+# Stream all trimmed R1 files as FASTA into left_pipe.fa
+pigz -dc {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz 2>> "{dirs['normalization_logs']}/pigz_left.err" | seqtk seq -A - 2>> "{dirs['normalization_logs']}/seqtk_left.err" > "{dirs['normalization_results']}/left_pipe.fa" &
 
-# Stream trimmed R2 files as FASTA into right_pipe.fa
-parallel -j 16 'pigz -dc {{}} | seqtk seq -A -' ::: {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz > "{dirs['normalization_results']}/right_pipe.fa" &
+# Stream all trimmed R2 files as FASTA into right_pipe.fa
+pigz -dc {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz 2>> "{dirs['normalization_logs']}/pigz_right.err" | seqtk seq -A - 2>> "{dirs['normalization_logs']}/seqtk_right.err" > "{dirs['normalization_results']}/right_pipe.fa" &
 
 # Wait for all background processes to finish
 wait
