@@ -31,10 +31,9 @@ This repository contains a bioinformatics pipeline for processing paired-end RNA
 1. **Clone the Repository**
    Clone from GitHub to your HPC system:
    ```bash
-   git clone https://github.com/<username>/<repository-name>.git
-   cd <repository-name>
+   git clone https://github.com/jakeelamb/transcriptome.git
+   cd transcriptome
    ```
-   Replace `<username>` and `<repository-name>` with your GitHub details.
 
 2. **Verify Directory Structure**
    After cloning, ensure the structure matches:
@@ -224,3 +223,16 @@ Contributions are welcome! To contribute:
 ## License
 
 [Add license information here]
+
+# Check main script logs
+cat logs/main/*.log
+
+# Examine trimming logs for a specific sample
+cat logs/trimming/sample_fastp.err
+
+# View assembly errors
+cat logs/assembly/rnaspades.err
+cat logs/assembly/trinity.err
+
+# Check BUSCO logs
+cat logs/busco/busco_rnaspades.err
