@@ -33,11 +33,36 @@ def setup_directories(base_dir):
 
 def find_paired_reads(raw_reads_dir):
     """Identify paired read files and report unpaired ones."""
-    r1_files = glob.glob(os.path.join(raw_reads_dir, '*_R1.fastq'))
-    r2_files = glob.glob(os.path.join(raw_reads_dir, '*_R2.fastq'))
+    # Update patterns to match compressed fastq files with various naming conventions
+    r1_patterns = ['*_R1.fastq.gz', '*_R1_001.fastq.gz']
+    r2_patterns = ['*_R2.fastq.gz', '*_R2_001.fastq.gz']
     
-    r1_samples = {os.path.basename(f).replace('_R1.fastq', '') for f in r1_files}
-    r2_samples = {os.path.basename(f).replace('_R2.fastq', '') for f in r2_files}
+    print(f"Searching for files in: {raw_reads_dir}")
+    
+    # Collect all files matching any R1 pattern
+    r1_files = []
+    for pattern in r1_patterns:
+        matching_files = glob.glob(os.path.join(raw_reads_dir, pattern))
+        print(f"Pattern '{pattern}' matched {len(matching_files)} files")
+        r1_files.extend(matching_files)
+    
+    # Collect all files matching any R2 pattern
+    r2_files = []
+    for pattern in r2_patterns:
+        r2_files.extend(glob.glob(os.path.join(raw_reads_dir, pattern)))
+    
+    # Extract sample names by removing the R1/R2 part and extensions
+    r1_samples = set()
+    for f in r1_files:
+        basename = os.path.basename(f)
+        sample = basename.replace('_R1_001.fastq.gz', '').replace('_R1.fastq.gz', '')
+        r1_samples.add(sample)
+    
+    r2_samples = set()
+    for f in r2_files:
+        basename = os.path.basename(f)
+        sample = basename.replace('_R2_001.fastq.gz', '').replace('_R2.fastq.gz', '')
+        r2_samples.add(sample)
     
     paired_samples = r1_samples & r2_samples
     unpaired_r1 = r1_samples - r2_samples
@@ -49,10 +74,26 @@ def find_paired_reads(raw_reads_dir):
     if unpaired_r2:
         print(f"Unpaired R2 files: {', '.join(unpaired_r2)}")
     
-    pairs = [(sample, 
-              os.path.join(raw_reads_dir, f"{sample}_R1.fastq"), 
-              os.path.join(raw_reads_dir, f"{sample}_R2.fastq")) 
-             for sample in paired_samples]
+    # Create pairs with correct paths
+    pairs = []
+    for sample in paired_samples:
+        # Try to find the matching files for this sample
+        r1_file = None
+        r2_file = None
+        
+        # Check for _R1_001.fastq.gz pattern first
+        r1_candidate = os.path.join(raw_reads_dir, f"{sample}_R1_001.fastq.gz")
+        if os.path.exists(r1_candidate):
+            r1_file = r1_candidate
+            r2_file = os.path.join(raw_reads_dir, f"{sample}_R2_001.fastq.gz")
+        else:
+            # Fall back to _R1.fastq.gz pattern
+            r1_file = os.path.join(raw_reads_dir, f"{sample}_R1.fastq.gz")
+            r2_file = os.path.join(raw_reads_dir, f"{sample}_R2.fastq.gz")
+        
+        if os.path.exists(r1_file) and os.path.exists(r2_file):
+            pairs.append((sample, r1_file, r2_file))
+    
     return pairs
 
 def all_trimmed_files_exist(pairs, trimmed_reads_dir):
@@ -341,10 +382,22 @@ def main():
     """Orchestrate the transcriptome analysis pipeline."""
     parser = argparse.ArgumentParser(description='Transcriptome assembly pipeline')
     parser.add_argument('-d', '--debug', action='store_true', help='Skip completed steps in debug mode')
+    parser.add_argument('-b', '--base-dir', default=None, 
+                      help='Base directory for the project (defaults to parent directory of script)')
     args = parser.parse_args()
     
-    base_dir = os.path.dirname(os.path.abspath(__file__))
+    # If base dir is provided, use it, otherwise use parent of script directory
+    if args.base_dir:
+        base_dir = os.path.abspath(args.base_dir)
+    else:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.dirname(script_dir)  # Use parent directory of script
+    
+    print(f"Using base directory: {base_dir}")
     dirs = setup_directories(base_dir)
+    
+    # Print raw reads directory to help with debugging
+    print(f"Looking for reads in: {dirs['raw_reads']}")
     
     # Step 1: Identify paired reads
     pairs = find_paired_reads(dirs['raw_reads'])
