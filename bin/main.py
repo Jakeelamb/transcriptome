@@ -79,6 +79,10 @@ def submit_trimming_jobs(pairs, dirs):
 #SBATCH --output={dirs['trimming_logs']}/{sample}_fastp.out
 #SBATCH --error={dirs['trimming_logs']}/{sample}_fastp.err
 
+# Source bashrc and activate conda environment
+source ~/.bashrc
+conda activate transcriptome
+
 fastp \\
     -i "{r1}" \\
     -I "{r2}" \\
@@ -125,6 +129,10 @@ def submit_merging_job(dirs, dependency=None):
         sbatch_script += f"#SBATCH --dependency=afterok:{':'.join(dependency)}\n"
     
     sbatch_script += f"""
+# Source bashrc and activate conda environment
+source ~/.bashrc
+conda activate transcriptome
+
 # Merge R1 files
 R1_FILES=$(ls {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz)
 pigz -dc $R1_FILES | pigz -1 > {dirs['merging_results']}/merged_R1.fastq.gz
@@ -165,6 +173,10 @@ def submit_normalization_job(dirs, dependency=None):
         sbatch_script += f"#SBATCH --dependency=afterok:{dependency}\n"
     
     sbatch_script += f"""
+# Source bashrc and activate conda environment
+source ~/.bashrc
+conda activate transcriptome
+
 $TRINITY_HOME/util/insilico_read_normalization.pl \\
     --seqType fq \\
     --JM 128G \\
@@ -213,6 +225,10 @@ def submit_assembly_jobs(dirs, dependency=None):
         rnaspades_script += f"#SBATCH --dependency=afterok:{dependency}\n"
     
     rnaspades_script += f"""
+# Source bashrc and activate conda environment
+source ~/.bashrc
+conda activate transcriptome
+
 rnaspades.py \\
     --rna \\
     -1 "{dirs['normalization_results']}/left.norm.fq" \\
@@ -246,6 +262,10 @@ rnaspades.py \\
         trinity_script += f"#SBATCH --dependency=afterok:{dependency}\n"
     
     trinity_script += f"""
+# Source bashrc and activate conda environment
+source ~/.bashrc
+conda activate transcriptome
+
 Trinity \\
     --seqType fq \\
     --left "{dirs['normalization_results']}/left.norm.fq" \\
@@ -294,6 +314,10 @@ def submit_busco_jobs(dirs, assembly_job_ids):
             sbatch_script += f"#SBATCH --dependency=afterok:{dep_job_id}\n"
         
         sbatch_script += f"""
+# Source bashrc and activate conda environment
+source ~/.bashrc
+conda activate transcriptome
+
 cd "{dirs['busco_results']}"
 busco \\
     -i "{assembly_file}" \\
