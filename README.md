@@ -103,7 +103,6 @@ Conda manages the Python environment and all bioinformatics tools.
    ```bash
    fastp --version
    pigz --version
-   repair.sh -h
    Trinity --version
    rnaspades.py --version
    busco --version
@@ -122,7 +121,6 @@ The pipeline processes paired-end RNA-seq data through these steps:
 
 1. **Trimming**: Uses fastp to trim adapters and low-quality bases.
 2. **Merging**: Combines trimmed reads into single files with pigz.
-3. **Checking**: Verifies paired-end integrity with repair.sh from BBtools.
 4. **Normalization**: Normalizes read coverage using Trinity's insilico_read_normalization.pl.
 5. **Assembly**: Assembles transcripts with rnaSPAdes and Trinity.
 6. **Evaluation**: Assesses assembly quality with BUSCO.

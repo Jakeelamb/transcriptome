@@ -142,50 +142,6 @@ pigz -dc $R2_FILES | pigz -1 > {dirs['merging_results']}/merged_R2.fastq.gz
         print(f"Failed to submit merging job: {result.stderr}")
         sys.exit(1)
 
-def fixed_files_exist(merging_results_dir):
-    """Check if fixed files exist and are non-empty."""
-    fixed_r1 = os.path.join(merging_results_dir, 'fixed_R1.fastq.gz')
-    fixed_r2 = os.path.join(merging_results_dir, 'fixed_R2.fastq.gz')
-    return (os.path.exists(fixed_r1) and os.path.getsize(fixed_r1) > 0 and
-            os.path.exists(fixed_r2) and os.path.getsize(fixed_r2) > 0)
-
-def submit_checking_job(dirs, dependency=None):
-    """Submit job to check merged files using repair.sh."""
-    sbatch_script = f"""#!/bin/bash
-#SBATCH --partition=day-long-highmem
-#SBATCH --time=24:00:00
-#SBATCH --nodes=1
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=128G
-#SBATCH --job-name=check_pairs
-#SBATCH --output={dirs['merging_logs']}/check_pairs.out
-#SBATCH --error={dirs['merging_logs']}/check_pairs.err
-"""
-    if dependency:
-        sbatch_script += f"#SBATCH --dependency=afterok:{dependency}\n"
-    
-    sbatch_script += f"""
-repair.sh \\
-    in1="{dirs['merging_results']}/merged_R1.fastq.gz" \\
-    in2="{dirs['merging_results']}/merged_R2.fastq.gz" \\
-    out1="{dirs['merging_results']}/fixed_R1.fastq.gz" \\
-    out2="{dirs['merging_results']}/fixed_R2.fastq.gz" \\
-    overwrite=t \\
-    tossbrokenreads=t \\
-    repair=t \\
-    showspeed=t \\
-    threads=$SLURM_CPUS_PER_TASK \\
-    2>> {dirs['merging_logs']}/check_pairs.log
-"""
-    result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
-    if result.returncode == 0:
-        job_id = result.stdout.strip().split()[-1]
-        print(f"Submitted checking job: job ID {job_id}")
-        return job_id
-    else:
-        print(f"Failed to submit checking job: {result.stderr}")
-        sys.exit(1)
-
 def normalized_files_exist(normalization_results_dir):
     """Check if normalized files exist and are non-empty."""
     norm_left = os.path.join(normalization_results_dir, 'left.norm.fq')
@@ -213,8 +169,8 @@ $TRINITY_HOME/util/insilico_read_normalization.pl \\
     --seqType fq \\
     --JM 128G \\
     --max_cov 100 \\
-    --left "{dirs['merging_results']}/fixed_R1.fastq.gz" \\
-    --right "{dirs['merging_results']}/fixed_R2.fastq.gz" \\
+    --left "{dirs['merging_results']}/merged_R1.fastq.gz" \\
+    --right "{dirs['merging_results']}/merged_R2.fastq.gz" \\
     --pairs_together \\
     --PARALLEL_STATS \\
     --CPU $SLURM_CPUS_PER_TASK \\
@@ -386,21 +342,14 @@ def main():
     else:
         merging_job_id = submit_merging_job(dirs, trimming_job_ids if trimming_job_ids else None)
     
-    # Step 4: Checking
-    if args.debug and fixed_files_exist(dirs['merging_results']):
-        print("Fixed files exist, skipping checking")
-        checking_job_id = None
-    else:
-        checking_job_id = submit_checking_job(dirs, merging_job_id)
-    
-    # Step 5: Normalization
+    # Step 4: Normalization
     if args.debug and normalized_files_exist(dirs['normalization_results']):
         print("Normalized files exist, skipping normalization")
         normalization_job_id = None
     else:
-        normalization_job_id = submit_normalization_job(dirs, checking_job_id)
+        normalization_job_id = submit_normalization_job(dirs, merging_job_id)
     
-    # Step 6: Assembly
+    # Step 5: Assembly
     assembly_job_ids = {}
     for assembler in ['rnaspades', 'trinity']:
         if args.debug and assembly_files_exist(dirs['assembly_results'], assembler):
@@ -411,7 +360,7 @@ def main():
                 assembly_job_ids.update(submit_assembly_jobs(dirs, normalization_job_id))
             # Avoid resubmitting if already submitted
     
-    # Step 7: BUSCO
+    # Step 6: BUSCO
     for assembler in ['rnaspades', 'trinity']:
         if args.debug and busco_files_exist(dirs['busco_results'], assembler):
             print(f"BUSCO results for {assembler} exist, skipping BUSCO for {assembler}")
