@@ -185,34 +185,51 @@ if [ -z "$(ls {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz 2>/dev/null)" ]; the
     exit 1
 fi
 
-# Create named pipes for streaming FASTA data
-mkfifo {dirs['normalization_results']}/left_pipe.fa
-mkfifo {dirs['normalization_results']}/right_pipe.fa
+# Create directories for intermediate files
+mkdir -p {dirs['normalization_results']}/tmp_fasta
 
-# Start normalization with FASTA input in background
+# Prepare input files instead of using pipes
+echo "Preparing R1 FASTA files"
+for R1_FILE in {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz; do
+    BASENAME=$(basename "$R1_FILE" _trimmed_R1.fastq.gz)
+    echo "Converting $R1_FILE to FASTA"
+    pigz -dc "$R1_FILE" | seqtk seq -A - > {dirs['normalization_results']}/tmp_fasta/"$BASENAME"_R1.fa
+done
+
+echo "Preparing R2 FASTA files"
+for R2_FILE in {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz; do
+    BASENAME=$(basename "$R2_FILE" _trimmed_R2.fastq.gz)
+    echo "Converting $R2_FILE to FASTA"
+    pigz -dc "$R2_FILE" | seqtk seq -A - > {dirs['normalization_results']}/tmp_fasta/"$BASENAME"_R2.fa
+done
+
+# Combine all FASTA files
+echo "Combining all R1 files"
+cat {dirs['normalization_results']}/tmp_fasta/*_R1.fa > {dirs['normalization_results']}/left.fa
+echo "Combining all R2 files"
+cat {dirs['normalization_results']}/tmp_fasta/*_R2.fa > {dirs['normalization_results']}/right.fa
+
+# Run the normalization on the prepared files
+echo "Starting in-silico normalization"
 $TRINITY_HOME/util/insilico_read_normalization.pl \\
     --seqType fa \\
     --JM 128G \\
     --max_cov 100 \\
-    --left "{dirs['normalization_results']}/left_pipe.fa" \\
-    --right "{dirs['normalization_results']}/right_pipe.fa" \\
+    --left "{dirs['normalization_results']}/left.fa" \\
+    --right "{dirs['normalization_results']}/right.fa" \\
     --pairs_together \\
     --PARALLEL_STATS \\
     --CPU $SLURM_CPUS_PER_TASK \\
     --output "{dirs['normalization_results']}" \\
-    2>> "{dirs['normalization_logs']}/trinity_norm.log" &
+    2>> "{dirs['normalization_logs']}/trinity_norm.log"
 
-# Stream all trimmed R1 files as FASTA into left_pipe.fa
-pigz -dc {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz 2>> "{dirs['normalization_logs']}/pigz_left.err" | seqtk seq -A - 2>> "{dirs['normalization_logs']}/seqtk_left.err" > "{dirs['normalization_results']}/left_pipe.fa" &
-
-# Stream all trimmed R2 files as FASTA into right_pipe.fa
-pigz -dc {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz 2>> "{dirs['normalization_logs']}/pigz_right.err" | seqtk seq -A - 2>> "{dirs['normalization_logs']}/seqtk_right.err" > "{dirs['normalization_results']}/right_pipe.fa" &
-
-# Wait for all background processes to finish
-wait
-
-# Clean up named pipes
-rm "{dirs['normalization_results']}/left_pipe.fa" "{dirs['normalization_results']}/right_pipe.fa"
+# Clean up temporary files if normalization was successful
+if [ -f "{dirs['normalization_results']}/left.norm.fa" ] && [ -f "{dirs['normalization_results']}/right.norm.fa" ]; then
+    echo "Normalization successful, cleaning up temporary files"
+    rm -rf {dirs['normalization_results']}/tmp_fasta
+else
+    echo "Normalization failed, keeping temporary files for debugging"
+fi
 """
     result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
     if result.returncode == 0:
