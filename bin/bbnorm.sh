@@ -1,3 +1,4 @@
+#!/bin/bash
 #SBATCH --partition=week-long-highmem
 #SBATCH --time=168:00:00
 #SBATCH --nodes=1

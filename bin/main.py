@@ -147,25 +147,17 @@ fastp \\
             sys.exit(1)
     return job_ids
 
-def normalized_files_exist(normalization_results_dir):
-    """Check if normalized FASTA files exist and are non-empty."""
-    # Updated to check .fa extensions since normalization outputs FASTA with FASTA input
-    norm_left = os.path.join(normalization_results_dir, 'left.norm.fa')
-    norm_right = os.path.join(normalization_results_dir, 'right.norm.fa')
-    return (os.path.exists(norm_left) and os.path.getsize(norm_left) > 0 and
-            os.path.exists(norm_right) and os.path.getsize(norm_right) > 0)
-
 def submit_normalization_job(dirs, dependency=None):
-    """Submit job to stream trimmed FASTQ files as FASTA into normalization."""
+    """Submit job to normalize reads using BBNorm instead of Trinity."""
     sbatch_script = f"""#!/bin/bash
 #SBATCH --partition=week-long-highmem
 #SBATCH --time=168:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=250G
-#SBATCH --job-name=trinity_norm
-#SBATCH --output={dirs['normalization_logs']}/trinity_norm.out
-#SBATCH --error={dirs['normalization_logs']}/trinity_norm.err
+#SBATCH --job-name=bbnorm
+#SBATCH --output={dirs['normalization_logs']}/bbnorm.out
+#SBATCH --error={dirs['normalization_logs']}/bbnorm.err
 """
     if dependency:
         sbatch_script += f"#SBATCH --dependency=afterok:{':'.join(dependency)}\n"
@@ -188,7 +180,7 @@ fi
 # Create directories for intermediate files
 mkdir -p {dirs['normalization_results']}/tmp_fasta
 
-# Prepare input files instead of using pipes
+# Prepare input files
 echo "Preparing R1 FASTA files"
 for R1_FILE in {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz; do
     BASENAME=$(basename "$R1_FILE" _trimmed_R1.fastq.gz)
@@ -209,22 +201,25 @@ cat {dirs['normalization_results']}/tmp_fasta/*_R1.fa > {dirs['normalization_res
 echo "Combining all R2 files"
 cat {dirs['normalization_results']}/tmp_fasta/*_R2.fa > {dirs['normalization_results']}/right.fa
 
-# Run the normalization on the prepared files
-echo "Starting in-silico normalization"
-$TRINITY_HOME/util/insilico_read_normalization.pl \\
-    --seqType fa \\
-    --JM 128G \\
-    --max_cov 100 \\
-    --left "{dirs['normalization_results']}/left.fa" \\
-    --right "{dirs['normalization_results']}/right.fa" \\
-    --pairs_together \\
-    --PARALLEL_STATS \\
-    --CPU $SLURM_CPUS_PER_TASK \\
-    --output "{dirs['normalization_results']}" \\
-    2>> "{dirs['normalization_logs']}/trinity_norm.log"
+# Define input and output files for BBNorm
+in1="{dirs['normalization_results']}/left.fa"
+in2="{dirs['normalization_results']}/right.fa"
+out1="{dirs['normalization_results']}/left.norm.fa"
+out2="{dirs['normalization_results']}/right.norm.fa"
+target=100
+
+# Run BBNorm for normalization
+echo "Starting BBNorm normalization"
+bbnorm.sh in1="$in1" in2="$in2" out1="$out1" out2="$out2" \\
+          target="$target" mindepth=3 maxdepth=-1 passes=2 \\
+          k=25 prefilter=t prefiltersize=0.4 buildpasses=2 bits=32 \\
+          threads=64 interleaved=false \\
+          ecc=f tossbadreads=f \\
+          -Xmx240g \\
+          2>> "{dirs['normalization_logs']}/bbnorm.log"
 
 # Clean up temporary files if normalization was successful
-if [ -f "{dirs['normalization_results']}/left.norm.fa" ] && [ -f "{dirs['normalization_results']}/right.norm.fa" ]; then
+if [ -f "$out1" ] && [ -f "$out2" ]; then
     echo "Normalization successful, cleaning up temporary files"
     rm -rf {dirs['normalization_results']}/tmp_fasta
 else
@@ -234,11 +229,19 @@ fi
     result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
     if result.returncode == 0:
         job_id = result.stdout.strip().split()[-1]
-        print(f"Submitted normalization job: job ID {job_id}")
+        print(f"Submitted BBNorm normalization job: job ID {job_id}")
         return job_id
     else:
-        print(f"Failed to submit normalization job: {result.stderr}")
+        print(f"Failed to submit BBNorm normalization job: {result.stderr}")
         sys.exit(1)
+
+def normalized_files_exist(normalization_results_dir):
+    """Check if normalized FASTA files exist and are non-empty."""
+    # Updated to check .fa extensions for BBNorm output
+    norm_left = os.path.join(normalization_results_dir, 'left.norm.fa')
+    norm_right = os.path.join(normalization_results_dir, 'right.norm.fa')
+    return (os.path.exists(norm_left) and os.path.getsize(norm_left) > 0 and
+            os.path.exists(norm_right) and os.path.getsize(norm_right) > 0)
 
 def submit_assembly_jobs(dirs, dependency=None):
     """Submit assembly jobs for rnaSPAdes and Trinity with FASTA input."""
