@@ -30,44 +30,70 @@ def get_fastp_params(json_file):
         data = json.load(f)
     return data.get('command', 'N/A')
 
-def compute_kmer_stats(fasta_file, output_dir, k=25):
-    """Compute k-mer statistics using Jellyfish."""
+def submit_kmer_job(fasta_file, output_dir, k=25):
+    """Submit a Slurm job to compute k-mer statistics using BBTools kmercountexact.sh."""
     if not os.path.exists(fasta_file):
-        return {'unique_kmers': 'N/A', 'avg_coverage': 'N/A'}
+        return {'unique_kmers': 'N/A', 'avg_coverage': 'N/A', 'job_id': 'N/A'}
 
-    # Check if Jellyfish is available
-    if not shutil.which('jellyfish'):
-        return {'unique_kmers': 'Jellyfish not found', 'avg_coverage': 'N/A'}
+    # Check if kmercountexact.sh is available
+    if not shutil.which('kmercountexact.sh'):
+        return {'unique_kmers': 'BBTools not found', 'avg_coverage': 'N/A', 'job_id': 'N/A'}
 
-    # Define output files
     base_name = os.path.basename(fasta_file).replace('.fa', '')
-    kmer_output = os.path.join(output_dir, f"{base_name}_k{k}.jf")
-    histo_output = os.path.join(output_dir, f"{base_name}_k{k}.histo")
+    histo_output = os.path.join(output_dir, f"{base_name}_k{k}_histogram.txt")
+    log_file = os.path.join(output_dir, f"{base_name}_kmer.log")
 
-    # Run Jellyfish count
-    count_cmd = [
-        'jellyfish', 'count', '-m', str(k), '-s', '100M', '-t', '4',
-        '-C', '-o', kmer_output, fasta_file
-    ]
-    subprocess.run(count_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # Slurm script for k-mer counting with BBTools
+    sbatch_script = f"""#!/bin/bash
+#SBATCH --partition=week-long-highmem
+#SBATCH --time=168:00:00
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=250G
+#SBATCH --job-name=kmer_{base_name}
+#SBATCH --output={log_file}
+#SBATCH --error={log_file}
 
-    # Run Jellyfish histo
-    histo_cmd = ['jellyfish', 'histo', kmer_output, '-o', histo_output]
-    subprocess.run(histo_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+source ~/.bashrc
+conda activate transcriptome
 
-    # Parse histogram to compute unique k-mers and average coverage
+# Run kmercountexact.sh
+kmercountexact.sh \\
+    in={fasta_file} \\
+    k={k} \\
+    threads=64 \\
+    histogram={histo_output} \\
+    -Xmx240g \\
+    2>> {log_file}
+"""
+
+    # Submit the job
+    result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
+    if result.returncode == 0:
+        job_id = result.stdout.strip().split()[-1]
+        print(f"Submitted k-mer job for {base_name}: job ID {job_id}")
+        return {'unique_kmers': 'Pending', 'avg_coverage': 'Pending', 'job_id': job_id}
+    else:
+        print(f"Failed to submit k-mer job for {base_name}: {result.stderr}")
+        return {'unique_kmers': 'Failed', 'avg_coverage': 'N/A', 'job_id': 'N/A'}
+
+def parse_kmer_stats(histo_file):
+    """Parse BBTools histogram to compute unique k-mers and average coverage."""
+    if not os.path.exists(histo_file):
+        return {'unique_kmers': 'N/A', 'avg_coverage': 'N/A'}
+    
     unique_kmers = 0
     total_kmers = 0
-    with open(histo_output, 'r') as f:
+    with open(histo_file, 'r') as f:
         for line in f:
-            count, freq = map(int, line.strip().split())
-            unique_kmers += 1
-            total_kmers += count * freq
-
-    # Clean up temporary files
-    os.remove(kmer_output)
-    os.remove(histo_output)
-
+            if line.startswith('#'):  # Skip header lines
+                continue
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                count, freq = int(parts[0]), int(parts[1])
+                unique_kmers += 1
+                total_kmers += count * freq
+    
     avg_coverage = total_kmers / unique_kmers if unique_kmers > 0 else 0
     return {
         'unique_kmers': unique_kmers,
@@ -89,8 +115,6 @@ def main():
     # Create statistics directory if it doesn't exist
     os.makedirs(dirs['statistics'], exist_ok=True)
     report_file = os.path.join(dirs['statistics'], 'report.txt')
-    kmer_temp_dir = os.path.join(dirs['statistics'], 'kmer_temp')
-    os.makedirs(kmer_temp_dir, exist_ok=True)
 
     with open(report_file, 'w') as report:
         # Header
@@ -164,18 +188,27 @@ def main():
         # K-mer Statistics
         report.write("K-mer Statistics (k=25):\n")
         report.write("------------------------\n")
+        kmer_jobs = {}
+        
         report.write("Before normalization:\n")
         for name, path in merged_files:
             report.write(f"  {name}:\n")
-            stats = compute_kmer_stats(path, kmer_temp_dir)
+            stats = submit_kmer_job(path, dirs['statistics'])
+            kmer_jobs[f"{name}_k25_histogram.txt"] = stats['job_id']
             report.write(f"    Unique k-mers: {stats['unique_kmers']}\n")
             report.write(f"    Average k-mer coverage: {stats['avg_coverage']}\n")
+            if stats['job_id'] != 'N/A':
+                report.write(f"    Job ID: {stats['job_id']} (Check {dirs['statistics']}/{name}_k25_histogram.txt after completion)\n")
+        
         report.write("After normalization:\n")
         for name, path in norm_files:
             report.write(f"  {name}:\n")
-            stats = compute_kmer_stats(path, kmer_temp_dir)
+            stats = submit_kmer_job(path, dirs['statistics'])
+            kmer_jobs[f"{name}_k25_histogram.txt"] = stats['job_id']
             report.write(f"    Unique k-mers: {stats['unique_kmers']}\n")
             report.write(f"    Average k-mer coverage: {stats['avg_coverage']}\n")
+            if stats['job_id'] != 'N/A':
+                report.write(f"    Job ID: {stats['job_id']} (Check {dirs['statistics']}/{name}_k25_histogram.txt after completion)\n")
         report.write("\n")
 
         # Assembly Files
@@ -193,9 +226,36 @@ def main():
                 report.write(f"{name}: Not found\n")
         report.write("\n")
 
-    # Clean up temporary k-mer directory
-    shutil.rmtree(kmer_temp_dir)
+        # Instructions for post-processing
+        report.write("Post-Processing Instructions:\n")
+        report.write("-----------------------------\n")
+        report.write("K-mer jobs have been submitted. After they complete, re-run this script to parse the histograms:\n")
+        report.write(f"  python {os.path.abspath(__file__)} --parse-only\n")
+        report.write("This will update the report with final k-mer statistics.\n")
+
+    # Optional: Parse existing histograms if --parse-only flag is provided
+    if '--parse-only' in os.sys.argv:
+        with open(report_file, 'a') as report:
+            report.write("\nUpdated K-mer Statistics (k=25):\n")
+            report.write("--------------------------------\n")
+            report.write("Before normalization:\n")
+            for name, path in merged_files:
+                histo_file = os.path.join(dirs['statistics'], f"{name}_k25_histogram.txt")
+                report.write(f"  {name}:\n")
+                stats = parse_kmer_stats(histo_file)
+                report.write(f"    Unique k-mers: {stats['unique_kmers']}\n")
+                report.write(f"    Average k-mer coverage: {stats['avg_coverage']}\n")
+            report.write("After normalization:\n")
+            for name, path in norm_files:
+                histo_file = os.path.join(dirs['statistics'], f"{name}_k25_histogram.txt")
+                report.write(f"  {name}:\n")
+                stats = parse_kmer_stats(histo_file)
+                report.write(f"    Unique k-mers: {stats['unique_kmers']}\n")
+                report.write(f"    Average k-mer coverage: {stats['avg_coverage']}\n")
+
     print(f"Statistics report generated: {report_file}")
+    if '--parse-only' not in os.sys.argv:
+        print("K-mer jobs submitted. Monitor with 'squeue -u $USER'. Re-run with '--parse-only' after completion.")
 
 if __name__ == "__main__":
     main()
