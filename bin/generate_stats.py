@@ -62,8 +62,7 @@ kmercountexact.sh \\
     in={fasta_file} \\
     k={k} \\
     threads=64 \\
-    histogram={histo_output} \\
-    -Xmx240g \\
+    khist={histo_output} \\
     2>> {log_file}
 """
 
