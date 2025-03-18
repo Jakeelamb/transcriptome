@@ -500,6 +500,7 @@ def main():
     parser.add_argument('--skip-assembly', action='store_true', help='Skip the assembly step')
     parser.add_argument('--skip-busco', action='store_true', help='Skip the BUSCO step')
     parser.add_argument('--only-normalize', action='store_true', help='Only run the normalization step')
+    parser.add_argument('--trimmed-dir', help='Path to the directory containing trimmed reads (if different from default)')
     args = parser.parse_args()
     
     # Setup directories
@@ -511,22 +512,31 @@ def main():
         args.skip_assembly = True
         args.skip_busco = True
     
-    # If input directory is specified, use it instead of the default raw_reads directory
-    if args.input_dir:
-        if os.path.isdir(args.input_dir):
-            raw_reads_dir = args.input_dir
-            print(f"Using raw reads from: {raw_reads_dir}")
+    # If trimmed-dir is specified, override the default trimmed reads directory
+    if args.trimmed_dir:
+        if os.path.isdir(args.trimmed_dir):
+            dirs['trimmed_reads'] = args.trimmed_dir
+            print(f"Using trimmed reads from: {dirs['trimmed_reads']}")
         else:
-            print(f"Error: Input directory {args.input_dir} does not exist.")
+            print(f"Error: Trimmed reads directory {args.trimmed_dir} does not exist.")
             sys.exit(1)
-    else:
-        raw_reads_dir = dirs['raw_reads']
-        print(f"Using default raw reads directory: {raw_reads_dir}")
     
     # Process based on requested steps
     trimming_job_ids = []
     
     if not args.skip_trimming:
+        # If input directory is specified, use it instead of the default raw_reads directory
+        if args.input_dir:
+            if os.path.isdir(args.input_dir):
+                raw_reads_dir = args.input_dir
+                print(f"Using raw reads from: {raw_reads_dir}")
+            else:
+                print(f"Error: Input directory {args.input_dir} does not exist.")
+                sys.exit(1)
+        else:
+            raw_reads_dir = dirs['raw_reads']
+            print(f"Using default raw reads directory: {raw_reads_dir}")
+            
         # Find read pairs
         pairs = find_paired_reads(raw_reads_dir)
         
@@ -548,10 +558,12 @@ def main():
         # Check if trimmed reads exist anyway
         trimmed_files = glob.glob(os.path.join(dirs['trimmed_reads'], '*_trimmed_R*.fastq.gz'))
         if trimmed_files:
-            print(f"Found {len(trimmed_files)} existing trimmed files.")
+            print(f"Found {len(trimmed_files)} existing trimmed files in {dirs['trimmed_reads']}")
         else:
-            print("Warning: No trimmed files found in the trimmed reads directory.")
-            print(f"Directory: {dirs['trimmed_reads']}")
+            print(f"Warning: No trimmed files found in the trimmed reads directory: {dirs['trimmed_reads']}")
+            if not args.debug:  # Only exit in non-debug mode
+                print("Cannot continue without trimmed reads. Exiting.")
+                sys.exit(1)
     
     # Check if normalized files exist
     if normalized_files_exist(dirs['normalization_results']):
@@ -583,6 +595,10 @@ def main():
         print("Submitting assembly jobs...")
         assembly_job_ids = submit_assembly_jobs(dirs, normalization_job_id)
     
+    if args.skip_busco:
+        print("Skipping BUSCO step as requested.")
+        return
+        
     # Check if BUSCO results exist
     rnaspades_busco_exists = busco_files_exist(dirs['busco_results'], 'rnaspades')
     trinity_busco_exists = busco_files_exist(dirs['busco_results'], 'trinity')
