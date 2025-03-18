@@ -5,30 +5,37 @@ import sys
 import subprocess
 import argparse
 import glob
+from datetime import datetime
 
-def setup_directories(base_dir):
-    """Define and create directory structure if not exists."""
+def setup_directories(root_dir=None):
+    """Set up necessary directories for transcriptome analysis."""
+    if root_dir is None:
+        root_dir = os.getcwd()
+    
     dirs = {
-        'data': os.path.join(base_dir, 'data'),
-        'raw_reads': os.path.join(base_dir, 'data', 'raw_reads'),
-        'trimmed_reads': os.path.join(base_dir, 'data', 'trimmed_reads'),
-        'transcriptome': os.path.join(base_dir, 'data', 'transcriptome'),
-        'results': os.path.join(base_dir, 'results'),
-        'trimming_results': os.path.join(base_dir, 'results', 'trimming'),
-        'merging_results': os.path.join(base_dir, 'results', 'merging'),
-        'normalization_results': os.path.join(base_dir, 'results', 'normalization'),
-        'assembly_results': os.path.join(base_dir, 'results', 'assembly'),
-        'busco_results': os.path.join(base_dir, 'results', 'busco'),
-        'logs': os.path.join(base_dir, 'logs'),
-        'main_logs': os.path.join(base_dir, 'logs', 'main'),
-        'trimming_logs': os.path.join(base_dir, 'logs', 'trimming'),
-        'merging_logs': os.path.join(base_dir, 'logs', 'merging'),
-        'normalization_logs': os.path.join(base_dir, 'logs', 'normalization'),
-        'assembly_logs': os.path.join(base_dir, 'logs', 'assembly'),
-        'busco_logs': os.path.join(base_dir, 'logs', 'busco')
+        'project': root_dir,
+        'raw_reads': os.path.join(root_dir, 'data', 'raw_reads'),
+        'trimmed_reads': os.path.join(root_dir, 'results', 'trimmed_reads'),
+        'transcriptome': os.path.join(root_dir, 'data', 'transcriptome'),
+        'results': os.path.join(root_dir, 'results'),
+        'trimming_results': os.path.join(root_dir, 'results', 'trimming'),
+        'merging_results': os.path.join(root_dir, 'results', 'merging'),
+        'normalization_results': os.path.join(root_dir, 'results', 'normalization'),
+        'assembly_results': os.path.join(root_dir, 'results', 'assembly'),
+        'busco_results': os.path.join(root_dir, 'results', 'busco'),
+        'logs': os.path.join(root_dir, 'logs'),
+        'main_logs': os.path.join(root_dir, 'logs', 'main'),
+        'trimming_logs': os.path.join(root_dir, 'logs', 'trimming'),
+        'merging_logs': os.path.join(root_dir, 'logs', 'merging'),
+        'normalization_logs': os.path.join(root_dir, 'logs', 'normalization'),
+        'assembly_logs': os.path.join(root_dir, 'logs', 'assembly'),
+        'busco_logs': os.path.join(root_dir, 'logs', 'busco')
     }
-    for dir_path in dirs.values():
-        os.makedirs(dir_path, exist_ok=True)
+    
+    # Create directories if they don't exist
+    for directory in dirs.values():
+        os.makedirs(directory, exist_ok=True)
+    
     return dirs
 
 def find_paired_reads(raw_reads_dir):
@@ -148,7 +155,7 @@ fastp \\
     return job_ids
 
 def submit_normalization_job(dirs, dependency=None):
-    """Submit job to normalize reads using BBNorm instead of Trinity."""
+    """Submit job to normalize reads using BBNorm with repair step."""
     sbatch_script = f"""#!/bin/bash
 #SBATCH --partition=week-long-highmem
 #SBATCH --time=168:00:00
@@ -167,64 +174,107 @@ def submit_normalization_job(dirs, dependency=None):
 source ~/.bashrc
 conda activate transcriptome
 
-# Check if trimmed files exist
-if [ -z "$(ls {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz 2>/dev/null)" ]; then
-    echo "Error: No trimmed R1 files found in {dirs['trimmed_reads']}" >&2
-    exit 1
-fi
-if [ -z "$(ls {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz 2>/dev/null)" ]; then
-    echo "Error: No trimmed R2 files found in {dirs['trimmed_reads']}" >&2
-    exit 1
-fi
-
-# Create directories for intermediate files
-mkdir -p {dirs['normalization_results']}/tmp_fasta
-
-# Prepare input files
-echo "Preparing R1 FASTA files"
-for R1_FILE in {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz; do
-    BASENAME=$(basename "$R1_FILE" _trimmed_R1.fastq.gz)
-    echo "Converting $R1_FILE to FASTA"
-    pigz -dc "$R1_FILE" | seqtk seq -A - > {dirs['normalization_results']}/tmp_fasta/"$BASENAME"_R1.fa
-done
-
-echo "Preparing R2 FASTA files"
-for R2_FILE in {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz; do
-    BASENAME=$(basename "$R2_FILE" _trimmed_R2.fastq.gz)
-    echo "Converting $R2_FILE to FASTA"
-    pigz -dc "$R2_FILE" | seqtk seq -A - > {dirs['normalization_results']}/tmp_fasta/"$BASENAME"_R2.fa
-done
-
-# Combine all FASTA files
-echo "Combining all R1 files"
-cat {dirs['normalization_results']}/tmp_fasta/*_R1.fa > {dirs['normalization_results']}/left.fa
-echo "Combining all R2 files"
-cat {dirs['normalization_results']}/tmp_fasta/*_R2.fa > {dirs['normalization_results']}/right.fa
-
-# Define input and output files for BBNorm
+# Define input and output files
 in1="{dirs['normalization_results']}/left.fa"
 in2="{dirs['normalization_results']}/right.fa"
 out1="{dirs['normalization_results']}/left.norm.fa"
 out2="{dirs['normalization_results']}/right.norm.fa"
+repaired_left="{dirs['normalization_results']}/repaired_left.fa"
+repaired_right="{dirs['normalization_results']}/repaired_right.fa"
+singletons="{dirs['normalization_results']}/singletons.fa"
+hist_in="{dirs['normalization_results']}/histogram_in.txt"
+hist_out="{dirs['normalization_results']}/histogram_out.txt"
+peaks="{dirs['normalization_results']}/peaks.txt"
 target=100
 
-# Run BBNorm for normalization
-echo "Starting BBNorm normalization"
-bbnorm.sh in1="$in1" in2="$in2" out1="$out1" out2="$out2" \\
-          target="$target" mindepth=3 maxdepth=-1 passes=2 \\
-          k=25 prefilter=t prefiltersize=0.4 buildpasses=2 bits=32 \\
-          threads=64 interleaved=false \\
-          ecc=f tossbadreads=f \\
-          -Xmx240g \\
-          2>> "{dirs['normalization_logs']}/bbnorm.log"
-
-# Clean up temporary files if normalization was successful
-if [ -f "$out1" ] && [ -f "$out2" ]; then
-    echo "Normalization successful, cleaning up temporary files"
-    rm -rf {dirs['normalization_results']}/tmp_fasta
-else
-    echo "Normalization failed, keeping temporary files for debugging"
+# Check if input files exist and are non-empty
+if [ ! -f "$in1" ] || [ ! -f "$in2" ]; then
+    echo "Error: Input files $in1 or $in2 do not exist."
+    exit 1
 fi
+
+if [ ! -s "$in1" ] || [ ! -s "$in2" ]; then
+    echo "Error: Input files $in1 or $in2 are empty."
+    exit 1
+fi
+
+# Check if merged files exist
+if [ ! -f "$in1" ] || [ ! -f "$in2" ]; then
+    echo "Error: Merged FASTA files $in1 or $in2 do not exist."
+    
+    # Prepare input files if not already available
+    echo "Preparing merged FASTA files from trimmed reads"
+    mkdir -p {dirs['normalization_results']}/tmp_fasta
+    
+    # Convert and merge R1 files
+    echo "Converting and merging R1 files"
+    for R1_FILE in {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz; do
+        BASENAME=$(basename "$R1_FILE" _trimmed_R1.fastq.gz)
+        echo "Processing $R1_FILE"
+        pigz -dc "$R1_FILE" | seqtk seq -A - >> "$in1"
+    done
+    
+    # Convert and merge R2 files
+    echo "Converting and merging R2 files"
+    for R2_FILE in {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz; do
+        BASENAME=$(basename "$R2_FILE" _trimmed_R2.fastq.gz)
+        echo "Processing $R2_FILE"
+        pigz -dc "$R2_FILE" | seqtk seq -A - >> "$in2"
+    done
+fi
+
+# Step 1: Repair the input reads to ensure pairing
+echo "Starting repair.sh at $(date)"
+repair.sh in1="$in1" in2="$in2" out1="$repaired_left" out2="$repaired_right" outs="$singletons" \\
+          threads=64 -Xmx200g verbose=t overwrite=t
+echo "Finished repair.sh at $(date)"
+
+# Verify the number of reads in the repaired files
+left_count=$(grep -c '^>' "$repaired_left")
+right_count=$(grep -c '^>' "$repaired_right")
+singleton_count=$(grep -c '^>' "$singletons")
+
+echo "Repaired left reads: $left_count"
+echo "Repaired right reads: $right_count"
+echo "Singletons: $singleton_count"
+
+if [ "$left_count" -ne "$right_count" ]; then
+    echo "Error: Mismatch in read counts between $repaired_left ($left_count) and $repaired_right ($right_count)"
+    exit 1
+fi
+
+if [ "$singleton_count" -gt 0 ]; then
+    echo "Warning: $singleton_count singletons found. Check $singletons for unpaired reads."
+fi
+
+# Step 2: Normalize the repaired reads, capping kmer depth at target value
+echo "Starting bbnorm.sh at $(date)"
+bbnorm.sh in1="$repaired_left" in2="$repaired_right" out1="$out1" out2="$out2" \\
+          target="$target" mindepth=5 maxdepth=100 passes=2 \\
+          k=31 prefilter=t prefiltersize=0.35 prehashes=2 prefilterbits=2 buildpasses=1 \\
+          bits=16 hashes=3 \\
+          threads=64 interleaved=false \\
+          ecc=f tossbadreads=f fixspikes=t deterministic=t \\
+          hist="$hist_in" histout="$hist_out" peaks="$peaks" \\
+          zerobin=t pzc=t histlen=10000 \\
+          minq=6 minprob=0.5 \\
+          -Xmx240g -eoom -da overwrite=t
+echo "Finished bbnorm.sh at $(date)"
+
+# Check output files and verify depth cap
+if [ ! -f "$out1" ] || [ ! -f "$out2" ]; then
+    echo "Error: Normalization failed. Output files $out1 or $out2 not generated."
+    exit 1
+fi
+
+echo "Normalization completed successfully at $(date)"
+echo "Kmer depth capped at $target. Check $hist_out to confirm depth distribution."
+
+# Get sizes of normalized files for reporting
+norm_left_size=$(stat -c %s "$out1")
+norm_right_size=$(stat -c %s "$out2")
+echo "Normalized left file size: $(numfmt --to=iec-i --suffix=B $norm_left_size)"
+echo "Normalized right file size: $(numfmt --to=iec-i --suffix=B $norm_right_size)"
 """
     result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
     if result.returncode == 0:
@@ -237,7 +287,6 @@ fi
 
 def normalized_files_exist(normalization_results_dir):
     """Check if normalized FASTA files exist and are non-empty."""
-    # Updated to check .fa extensions for BBNorm output
     norm_left = os.path.join(normalization_results_dir, 'left.norm.fa')
     norm_right = os.path.join(normalization_results_dir, 'right.norm.fa')
     return (os.path.exists(norm_left) and os.path.getsize(norm_left) > 0 and
@@ -398,68 +447,77 @@ busco \\
     return busco_job_ids
 
 def main():
-    """Orchestrate the optimized transcriptome analysis pipeline."""
-    parser = argparse.ArgumentParser(description='Transcriptome assembly pipeline')
-    parser.add_argument('-d', '--debug', action='store_true', help='Skip completed steps in debug mode')
-    parser.add_argument('-b', '--base-dir', default=None, 
-                        help='Base directory for the project (defaults to parent directory of script)')
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Run transcriptome assembly pipeline')
+    parser.add_argument('-i', '--input-dir', help='Path to the directory containing raw reads')
     args = parser.parse_args()
     
-    if args.base_dir:
-        base_dir = os.path.abspath(args.base_dir)
+    # Setup directories
+    dirs = setup_directories()
+    
+    # If input directory is specified, use it instead of the default raw_reads directory
+    if args.input_dir:
+        if os.path.isdir(args.input_dir):
+            raw_reads_dir = args.input_dir
+            print(f"Using raw reads from: {raw_reads_dir}")
+        else:
+            print(f"Error: Input directory {args.input_dir} does not exist.")
+            sys.exit(1)
     else:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.dirname(script_dir)
+        raw_reads_dir = dirs['raw_reads']
+        print(f"Using default raw reads directory: {raw_reads_dir}")
     
-    print(f"Using base directory: {base_dir}")
-    dirs = setup_directories(base_dir)
+    # Find read pairs
+    pairs = find_paired_reads(raw_reads_dir)
     
-    print(f"Looking for reads in: {dirs['raw_reads']}")
-    
-    # Step 1: Identify paired reads
-    pairs = find_paired_reads(dirs['raw_reads'])
     if not pairs:
-        print("No paired samples found. Exiting.")
+        print("No read pairs found. Exiting.")
         sys.exit(1)
     
-    # Step 2: Trimming
-    if args.debug and all_trimmed_files_exist(pairs, dirs['trimmed_reads']):
-        print("All trimmed files exist, skipping trimming")
+    print(f"Found {len(pairs)} paired read files.")
+    
+    # Check if all trimmed files exist
+    if all_trimmed_files_exist(pairs, dirs['trimmed_reads']):
+        print("All trimmed files already exist, skipping trimming step.")
         trimming_job_ids = []
     else:
+        # Submit trimming jobs
+        print("Submitting trimming jobs...")
         trimming_job_ids = submit_trimming_jobs(pairs, dirs)
     
-    # Step 3: Normalization (Merging integrated here)
-    if args.debug and normalized_files_exist(dirs['normalization_results']):
-        print("Normalized files exist, skipping normalization")
+    # Check if normalized files exist
+    if normalized_files_exist(dirs['normalization_results']):
+        print("Normalized files already exist, skipping normalization step.")
         normalization_job_id = None
     else:
-        normalization_job_id = submit_normalization_job(dirs, trimming_job_ids if trimming_job_ids else None)
+        # Submit normalization job
+        print("Submitting normalization job...")
+        normalization_job_id = submit_normalization_job(dirs, trimming_job_ids)
     
-    # Step 4: Assembly - Fix the logic to submit both assemblies at once
-    run_assembly = False
-    for assembler in ['rnaspades', 'trinity']:
-        if not (args.debug and assembly_files_exist(dirs['assembly_results'], assembler)):
-            run_assembly = True
-            break
+    # Check if assembly files exist
+    rnaspades_exists = assembly_files_exist(dirs['assembly_results'], 'rnaspades')
+    trinity_exists = assembly_files_exist(dirs['assembly_results'], 'trinity')
     
-    if run_assembly:
-        assembly_job_ids = submit_assembly_jobs(dirs, normalization_job_id)
+    if rnaspades_exists and trinity_exists:
+        print("All assembly files already exist, skipping assembly step.")
+        assembly_job_ids = {}
     else:
-        print("All assembly outputs exist, skipping assembly")
-        assembly_job_ids = {'rnaspades': None, 'trinity': None}
+        # Submit assembly jobs
+        print("Submitting assembly jobs...")
+        assembly_job_ids = submit_assembly_jobs(dirs, normalization_job_id)
     
-    # Step 5: BUSCO
-    run_busco = {}
-    for assembler in ['rnaspades', 'trinity']:
-        if args.debug and busco_files_exist(dirs['busco_results'], assembler):
-            print(f"BUSCO results for {assembler} exist, skipping BUSCO for {assembler}")
-            run_busco[assembler] = None
-        else:
-            run_busco[assembler] = assembly_job_ids[assembler]
+    # Check if BUSCO results exist
+    rnaspades_busco_exists = busco_files_exist(dirs['busco_results'], 'rnaspades')
+    trinity_busco_exists = busco_files_exist(dirs['busco_results'], 'trinity')
     
-    if any(run_busco.values()) or not args.debug:
-        submit_busco_jobs(dirs, run_busco)
+    if rnaspades_busco_exists and trinity_busco_exists:
+        print("All BUSCO results already exist, skipping BUSCO step.")
+    else:
+        # Submit BUSCO jobs
+        print("Submitting BUSCO jobs...")
+        busco_job_ids = submit_busco_jobs(dirs, assembly_job_ids)
+    
+    print("Pipeline submitted successfully. Monitor jobs with 'squeue -u $USER'.")
 
 if __name__ == "__main__":
     main()
