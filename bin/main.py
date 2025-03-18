@@ -154,7 +154,7 @@ fastp \\
             sys.exit(1)
     return job_ids
 
-def submit_normalization_job(dirs, dependency=None):
+def submit_normalization_job(dirs, dependency=None, debug=False):
     """Submit job to normalize reads using BBNorm with repair step."""
     sbatch_script = f"""#!/bin/bash
 #SBATCH --partition=week-long-highmem
@@ -166,13 +166,16 @@ def submit_normalization_job(dirs, dependency=None):
 #SBATCH --output={dirs['normalization_logs']}/bbnorm.out
 #SBATCH --error={dirs['normalization_logs']}/bbnorm.err
 """
-    if dependency:
+    if dependency and len(dependency) > 0:
         sbatch_script += f"#SBATCH --dependency=afterok:{':'.join(dependency)}\n"
     
     sbatch_script += f"""
 # Source bashrc and activate conda environment
 source ~/.bashrc
 conda activate transcriptome
+echo "Starting normalization job at $(date)"
+echo "Current directory: $(pwd)"
+echo "Using conda environment: $CONDA_PREFIX"
 
 # Define input and output files
 in1="{dirs['normalization_results']}/left.fa"
@@ -186,6 +189,15 @@ hist_in="{dirs['normalization_results']}/histogram_in.txt"
 hist_out="{dirs['normalization_results']}/histogram_out.txt"
 peaks="{dirs['normalization_results']}/peaks.txt"
 target=100
+
+echo "Trimmed reads directory: {dirs['trimmed_reads']}"
+echo "Normalization results directory: {dirs['normalization_results']}"
+
+# List trimmed read files to confirm they exist
+echo "Checking for trimmed read files:"
+ls -la {dirs['trimmed_reads']}/ | grep "_trimmed_R[12].fastq.gz"
+trimmed_count=$(ls -1 {dirs['trimmed_reads']}/*_trimmed_R[12].fastq.gz 2>/dev/null | wc -l)
+echo "Found $trimmed_count trimmed read files"
 
 # Create input FASTA files if they don't exist
 if [ ! -f "$in1" ] || [ ! -f "$in2" ] || [ ! -s "$in1" ] || [ ! -s "$in2" ]; then
@@ -204,8 +216,11 @@ if [ ! -f "$in1" ] || [ ! -f "$in2" ] || [ ! -s "$in1" ] || [ ! -s "$in2" ]; the
             BASENAME=$(basename "$R1_FILE" _trimmed_R1.fastq.gz)
             echo "Processing $R1_FILE"
             pigz -dc "$R1_FILE" | seqtk seq -A - >> "$in1"
-            if [ $? -ne 0 ]; then
-                echo "Error processing $R1_FILE"
+            RESULT=$?
+            if [ $RESULT -ne 0 ]; then
+                echo "Error processing $R1_FILE (exit code: $RESULT)"
+                which pigz
+                which seqtk
                 exit 1
             fi
         fi
@@ -218,8 +233,11 @@ if [ ! -f "$in1" ] || [ ! -f "$in2" ] || [ ! -s "$in1" ] || [ ! -s "$in2" ]; the
             BASENAME=$(basename "$R2_FILE" _trimmed_R2.fastq.gz)
             echo "Processing $R2_FILE"
             pigz -dc "$R2_FILE" | seqtk seq -A - >> "$in2"
-            if [ $? -ne 0 ]; then
-                echo "Error processing $R2_FILE"
+            RESULT=$?
+            if [ $RESULT -ne 0 ]; then
+                echo "Error processing $R2_FILE (exit code: $RESULT)"
+                which pigz
+                which seqtk
                 exit 1
             fi
         fi
@@ -296,6 +314,13 @@ norm_right_size=$(stat -c %s "$out2")
 echo "Normalized left file size: $(numfmt --to=iec-i --suffix=B $norm_left_size)"
 echo "Normalized right file size: $(numfmt --to=iec-i --suffix=B $norm_right_size)"
 """
+    
+    if debug:
+        print("=== Debug: Normalization Job Script ===")
+        print(sbatch_script)
+        print("======================================")
+        return None
+    
     result = subprocess.run(['sbatch'], input=sbatch_script, text=True, capture_output=True)
     if result.returncode == 0:
         job_id = result.stdout.strip().split()[-1]
@@ -470,10 +495,21 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Run transcriptome assembly pipeline')
     parser.add_argument('-i', '--input-dir', help='Path to the directory containing raw reads')
+    parser.add_argument('-d', '--debug', action='store_true', help='Print debug information instead of submitting jobs')
+    parser.add_argument('--skip-trimming', action='store_true', help='Skip the trimming step (use if already trimmed)')
+    parser.add_argument('--skip-assembly', action='store_true', help='Skip the assembly step')
+    parser.add_argument('--skip-busco', action='store_true', help='Skip the BUSCO step')
+    parser.add_argument('--only-normalize', action='store_true', help='Only run the normalization step')
     args = parser.parse_args()
     
     # Setup directories
     dirs = setup_directories()
+    
+    # If only normalize flag is set, set all skip flags
+    if args.only_normalize:
+        args.skip_trimming = True
+        args.skip_assembly = True
+        args.skip_busco = True
     
     # If input directory is specified, use it instead of the default raw_reads directory
     if args.input_dir:
@@ -487,23 +523,35 @@ def main():
         raw_reads_dir = dirs['raw_reads']
         print(f"Using default raw reads directory: {raw_reads_dir}")
     
-    # Find read pairs
-    pairs = find_paired_reads(raw_reads_dir)
+    # Process based on requested steps
+    trimming_job_ids = []
     
-    if not pairs:
-        print("No read pairs found. Exiting.")
-        sys.exit(1)
-    
-    print(f"Found {len(pairs)} paired read files.")
-    
-    # Check if all trimmed files exist
-    if all_trimmed_files_exist(pairs, dirs['trimmed_reads']):
-        print("All trimmed files already exist, skipping trimming step.")
-        trimming_job_ids = []
+    if not args.skip_trimming:
+        # Find read pairs
+        pairs = find_paired_reads(raw_reads_dir)
+        
+        if not pairs:
+            print("No read pairs found. Exiting.")
+            sys.exit(1)
+        
+        print(f"Found {len(pairs)} paired read files.")
+        
+        # Check if all trimmed files exist
+        if all_trimmed_files_exist(pairs, dirs['trimmed_reads']):
+            print("All trimmed files already exist, skipping trimming step.")
+        else:
+            # Submit trimming jobs
+            print("Submitting trimming jobs...")
+            trimming_job_ids = submit_trimming_jobs(pairs, dirs)
     else:
-        # Submit trimming jobs
-        print("Submitting trimming jobs...")
-        trimming_job_ids = submit_trimming_jobs(pairs, dirs)
+        print("Skipping trimming step as requested.")
+        # Check if trimmed reads exist anyway
+        trimmed_files = glob.glob(os.path.join(dirs['trimmed_reads'], '*_trimmed_R*.fastq.gz'))
+        if trimmed_files:
+            print(f"Found {len(trimmed_files)} existing trimmed files.")
+        else:
+            print("Warning: No trimmed files found in the trimmed reads directory.")
+            print(f"Directory: {dirs['trimmed_reads']}")
     
     # Check if normalized files exist
     if normalized_files_exist(dirs['normalization_results']):
@@ -512,8 +560,17 @@ def main():
     else:
         # Submit normalization job
         print("Submitting normalization job...")
-        normalization_job_id = submit_normalization_job(dirs, trimming_job_ids)
+        normalization_job_id = submit_normalization_job(dirs, trimming_job_ids, args.debug)
     
+    if args.debug:
+        print("Debug mode: Jobs not submitted. Exiting.")
+        return
+    
+    if args.skip_assembly or args.only_normalize:
+        print("Skipping assembly step as requested.")
+        return
+    
+    # Continue with assembly and BUSCO if not skipped
     # Check if assembly files exist
     rnaspades_exists = assembly_files_exist(dirs['assembly_results'], 'rnaspades')
     trinity_exists = assembly_files_exist(dirs['assembly_results'], 'trinity')
