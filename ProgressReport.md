@@ -14,6 +14,7 @@ The pipeline for this project is designed to process large-scale RNA-Seq dataset
 
 **Progress:** 
 
+
 **Rationale:** A quality threshold of 20 (Phred score) balances the removal of sequencing errors with the preservation of usable data, as it filters out bases with a >1% error rate. Deduplication reduces redundancy, which is critical for single-cell data where PCR amplification artifacts are common. Adapter detection for paired-end reads ensures compatibility with the diverse naming conventions in the dataset (e.g., `_R1.fastq.gz` and `_R2.fastq.gz`), as outlined in the README.md.
 
 ![Figure 1: Distribution of raw vs. trimmed read sizes]()

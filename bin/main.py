@@ -187,40 +187,60 @@ hist_out="{dirs['normalization_results']}/histogram_out.txt"
 peaks="{dirs['normalization_results']}/peaks.txt"
 target=100
 
-# Check if input files exist and are non-empty
-if [ ! -f "$in1" ] || [ ! -f "$in2" ]; then
-    echo "Error: Input files $in1 or $in2 do not exist."
-    exit 1
-fi
-
-if [ ! -s "$in1" ] || [ ! -s "$in2" ]; then
-    echo "Error: Input files $in1 or $in2 are empty."
-    exit 1
-fi
-
-# Check if merged files exist
-if [ ! -f "$in1" ] || [ ! -f "$in2" ]; then
-    echo "Error: Merged FASTA files $in1 or $in2 do not exist."
+# Create input FASTA files if they don't exist
+if [ ! -f "$in1" ] || [ ! -f "$in2" ] || [ ! -s "$in1" ] || [ ! -s "$in2" ]; then
+    echo "Merged FASTA files don't exist or are empty. Creating them now..."
     
-    # Prepare input files if not already available
-    echo "Preparing merged FASTA files from trimmed reads"
-    mkdir -p {dirs['normalization_results']}/tmp_fasta
+    # Remove any existing but empty files
+    rm -f "$in1" "$in2"
+    
+    # Ensure the directory exists
+    mkdir -p "{dirs['normalization_results']}"
     
     # Convert and merge R1 files
-    echo "Converting and merging R1 files"
+    echo "Converting and merging R1 files at $(date)"
     for R1_FILE in {dirs['trimmed_reads']}/*_trimmed_R1.fastq.gz; do
-        BASENAME=$(basename "$R1_FILE" _trimmed_R1.fastq.gz)
-        echo "Processing $R1_FILE"
-        pigz -dc "$R1_FILE" | seqtk seq -A - >> "$in1"
+        if [ -f "$R1_FILE" ]; then
+            BASENAME=$(basename "$R1_FILE" _trimmed_R1.fastq.gz)
+            echo "Processing $R1_FILE"
+            pigz -dc "$R1_FILE" | seqtk seq -A - >> "$in1"
+            if [ $? -ne 0 ]; then
+                echo "Error processing $R1_FILE"
+                exit 1
+            fi
+        fi
     done
     
     # Convert and merge R2 files
-    echo "Converting and merging R2 files"
+    echo "Converting and merging R2 files at $(date)"
     for R2_FILE in {dirs['trimmed_reads']}/*_trimmed_R2.fastq.gz; do
-        BASENAME=$(basename "$R2_FILE" _trimmed_R2.fastq.gz)
-        echo "Processing $R2_FILE"
-        pigz -dc "$R2_FILE" | seqtk seq -A - >> "$in2"
+        if [ -f "$R2_FILE" ]; then
+            BASENAME=$(basename "$R2_FILE" _trimmed_R2.fastq.gz)
+            echo "Processing $R2_FILE"
+            pigz -dc "$R2_FILE" | seqtk seq -A - >> "$in2"
+            if [ $? -ne 0 ]; then
+                echo "Error processing $R2_FILE"
+                exit 1
+            fi
+        fi
     done
+    
+    # Check if files were created successfully
+    if [ ! -s "$in1" ] || [ ! -s "$in2" ]; then
+        echo "Failed to create merged FASTA files. Check if trimmed reads exist."
+        echo "Trimmed reads directory: {dirs['trimmed_reads']}"
+        ls -la {dirs['trimmed_reads']}
+        exit 1
+    fi
+    
+    echo "Successfully created merged FASTA files:"
+    du -h "$in1" "$in2"
+fi
+
+# Now check if input files exist and are non-empty
+if [ ! -s "$in1" ] || [ ! -s "$in2" ]; then
+    echo "Error: Input files $in1 or $in2 do not exist or are empty."
+    exit 1
 fi
 
 # Step 1: Repair the input reads to ensure pairing
