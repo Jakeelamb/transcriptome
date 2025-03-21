@@ -13,8 +13,8 @@ source ~/.bashrc
 conda activate transcriptome
 
 # Define input and output files
-in1=/nfs/home/jlamb/Projects/transcriptome/results/normalization/left.fa
-in2=/nfs/home/jlamb/Projects/transcriptome/results/normalization/right.fa
+in1=/nfs/home/jlamb/Projects/nf_denovo_transcriptome/results/merging/merged_R1.fastq.gz
+in2=/nfs/home/jlamb/Projects/nf_denovo_transcriptome/results/merging/merged_R2.fastq.gz
 out1=/nfs/home/jlamb/Projects/transcriptome/results/normalization/left.norm.fa
 out2=/nfs/home/jlamb/Projects/transcriptome/results/normalization/right.norm.fa
 repaired_left=/nfs/home/jlamb/Projects/transcriptome/results/normalization/repaired_left.fa
@@ -66,6 +66,7 @@ bbnorm.sh in1="$repaired_left" in2="$repaired_right" out1="$out1" out2="$out2" \
           hist="$hist_in" histout="$hist_out" peaks="$peaks" \
           zerobin=t pzc=t histlen=10000 \
           minq=6 minprob=0.5 \
+	  tossbrokenreads=t \
           -Xmx240g -eoom -da overwrite=t
 echo "Finished bbnorm.sh at $(date)"
 
